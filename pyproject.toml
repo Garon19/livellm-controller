@@ -1,0 +1,26 @@
+[project]
+name = "livellm-controller"
+version = "2.3.2"
+description = "Controller API that connects to livellm-browser over CDP"
+readme = "README.md"
+requires-python = "==3.9.*"
+dependencies = [
+    "fastapi>=0.121.3",
+    "pydantic>=2.12.4",
+    "pydantic-settings>=2.0",
+    "uvicorn[standard]>=0.38.0",
+    "patchright==1.56.0",
+    "beautifulsoup4>=4.12.0",
+    "lxml>=5.0.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "openai>=2.15.0"
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
