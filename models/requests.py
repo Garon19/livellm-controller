@@ -44,6 +44,40 @@ class SearchHintsRequest(BaseModel):
     wait: float = Field(default=1.5, description="Time in seconds to wait for suggestions to appear after typing")
 
 
+class LentaBootstrapRequest(BaseModel):
+    """Bootstrap one session-scoped Lenta storefront context."""
+
+    timeout: float = Field(default=30000, gt=0, le=120000)
+
+
+class LentaItemRequest(BaseModel):
+    """Fetch one canonical Lenta item using a bootstrapped browser session."""
+
+    url: str = Field(..., description="Canonical lenta.com /product/...-<id>/ URL")
+    timeout: float = Field(default=30000, gt=0, le=120000)
+
+    @model_validator(mode="after")
+    def validate_product_url(self):
+        import re
+        from urllib.parse import urlsplit
+
+        parsed = urlsplit(self.url)
+        if parsed.scheme != "https" or parsed.hostname not in {"lenta.com", "www.lenta.com"}:
+            raise ValueError("url must be an HTTPS lenta.com product URL")
+        match = re.fullmatch(r"/product/.+-(\d+)/?", parsed.path)
+        if match is None or parsed.query or parsed.fragment:
+            raise ValueError("url must be a canonical /product/...-<id>/ URL")
+        return self
+
+    @property
+    def product_id(self) -> str:
+        import re
+        from urllib.parse import urlsplit
+
+        match = re.fullmatch(r"/product/.+-(\d+)/?", urlsplit(self.url).path)
+        return match.group(1)
+
+
 class UtkonosBootstrapRequest(BaseModel):
     """Bootstrap one session-scoped Utkonos storefront context."""
 

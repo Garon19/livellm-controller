@@ -7,7 +7,7 @@ from patchright.async_api import async_playwright
 
 from core.browser import browser_manager
 from core.registry import browser_registry
-from routes import health, browsers, search, content, interact, attribute, utkonos
+from routes import health, browsers, search, content, interact, attribute, utkonos, lenta
 
 
 # ==================== Logging ====================
@@ -125,6 +125,7 @@ app.include_router(content.router)
 app.include_router(interact.router)
 app.include_router(attribute.router)
 app.include_router(utkonos.router)
+app.include_router(lenta.router)
 
 
 if __name__ == "__main__":

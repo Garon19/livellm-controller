@@ -9,3 +9,5 @@ def test_openapi_exposes_utkonos_session_routes():
     assert "/utkonos/catalog/items" in paths
     assert "/utkonos/items/{product_id}" in paths
     assert "/utkonos/metrics" in paths
+    assert "/lenta/bootstrap" in paths
+    assert "/lenta/items/{product_id}" in paths
