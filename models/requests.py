@@ -44,6 +44,48 @@ class SearchHintsRequest(BaseModel):
     wait: float = Field(default=1.5, description="Time in seconds to wait for suggestions to appear after typing")
 
 
+class UtkonosBootstrapRequest(BaseModel):
+    """Bootstrap one session-scoped Utkonos storefront context."""
+
+    timeout: float = Field(default=30000, gt=0, le=120000)
+
+
+class UtkonosListingRequest(BaseModel):
+    """Fetch one bounded Utkonos catalog page."""
+
+    category_id: str = Field(..., pattern=r"^\d+$")
+    limit: int = Field(default=40, ge=1, le=40)
+    offset: int = Field(default=0, ge=0)
+
+
+class UtkonosItemRequest(BaseModel):
+    """Fetch one canonical Utkonos item using a bootstrapped session."""
+
+    url: str = Field(..., description="Canonical utkonos.ru /item/<sku>/ URL")
+    timeout: float = Field(default=30000, gt=0, le=120000)
+
+    @model_validator(mode="after")
+    def validate_product_url(self):
+        import re
+        from urllib.parse import urlsplit
+
+        parsed = urlsplit(self.url)
+        if parsed.scheme != "https" or parsed.hostname not in {"utkonos.ru", "www.utkonos.ru"}:
+            raise ValueError("url must be an HTTPS utkonos.ru product URL")
+        match = re.fullmatch(r"/item/(\d+)/?", parsed.path)
+        if match is None or parsed.query or parsed.fragment:
+            raise ValueError("url must be a canonical /item/<sku>/ URL")
+        return self
+
+    @property
+    def product_id(self) -> str:
+        import re
+        from urllib.parse import urlsplit
+
+        match = re.fullmatch(r"/item/(\d+)/?", urlsplit(self.url).path)
+        return match.group(1)
+
+
 class ContentRequest(BaseModel):
     """
     Get page content with automatic scrolling.
