@@ -4,6 +4,7 @@ import logging
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
 
+from core.captcha import maybe_autosolve
 from core.dependencies import PageDep
 from helpers.playwright import scroll_to_bottom
 from models.requests import ContentRequest, OutputAction
@@ -29,6 +30,9 @@ async def get_content(request: ContentRequest, page: PageDep) -> Response:
     try:
         if request.url:
             await page.goto(request.url, wait_until=request.wait_until, timeout=request.timeout)
+            # Optional hCaptcha auto-solve. Off unless CAPTCHA_AUTOSOLVE is
+            # set; never raises; the flow continues regardless of outcome.
+            await maybe_autosolve(page, request.url)
 
         if request.idle > 0:
             await asyncio.sleep(request.idle)

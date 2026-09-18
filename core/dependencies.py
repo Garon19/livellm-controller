@@ -6,6 +6,7 @@ from patchright.async_api import Page
 
 from core.browser import BrowserInfo, BrowserManager
 from core.registry import browser_registry
+from core.session_store import SessionConflictError, SessionStoreError
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +30,16 @@ async def get_browser_info(
     manager: BrowserManager = request.app.state.browser_manager
 
     bid = browser_id
+    if not bid:
+        session_id = request.headers.get("X-Session-Id")
+        if session_id and manager.is_persistent_session(session_id):
+            try:
+                bid = manager.session_store.get(session_id).get("browser_id")
+            except SessionStoreError as exc:
+                raise HTTPException(
+                    status_code=500,
+                    detail="Persistent session state could not be read",
+                ) from exc
     if not bid:
         bid = manager.least_loaded_browser_id() or manager.first_browser_id()
         if not bid:
@@ -113,15 +124,84 @@ async def get_or_create_page(
     """
     Get a page for the request.
 
-    • **Named session** (``X-Session-Id`` provided) — returns the existing
-      session page, or creates a new one in the default context.
-    • **Ad-hoc** (no session header) — creates a fresh page just for this
-      request and closes it on the way out.
+    • **Durable session** (registered ``X-Session-Id``) — lazily restores a
+      dedicated proxy context and snapshots it after the request.
+    • **Legacy named session** — reuses a page in the default context.
+    • **Ad-hoc** — creates a request-scoped page in the default context.
     """
     is_ad_hoc = session_id is None
     page: Optional[Page] = None
+    manager: BrowserManager = request.app.state.browser_manager
 
-    # ── Named session: reuse existing page ──
+    if session_id is not None and manager.is_persistent_session(session_id):
+        try:
+            handle = await manager.activate_persistent_session(browser_info, session_id)
+        except SessionConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except SessionStoreError as exc:
+            raise HTTPException(
+                status_code=500,
+                detail="Persistent session state could not be read",
+            ) from exc
+        except Exception as exc:
+            logger.warning(
+                "Failed to activate persistent session %s; attempting browser recovery (%s)",
+                session_id,
+                type(exc).__name__,
+            )
+            fresh_ws_url = browser_registry.get_browser_ws_url(browser_info.browser_id)
+            reconnect_url = fresh_ws_url or browser_info.ws_url
+            try:
+                browser_info = await manager.recover_connection(
+                    browser_info.browser_id,
+                    reconnect_url,
+                    headers=browser_registry.get_browser_headers(browser_info.browser_id),
+                )
+                handle = await manager.activate_persistent_session(
+                    browser_info, session_id
+                )
+            except SessionConflictError as conflict:
+                raise HTTPException(status_code=409, detail=str(conflict)) from conflict
+            except SessionStoreError as store_error:
+                raise HTTPException(
+                    status_code=500,
+                    detail="Persistent session state could not be read",
+                ) from store_error
+            except Exception as recover_err:
+                raise HTTPException(
+                    status_code=502,
+                    detail="Failed to activate persistent session after browser recovery",
+                ) from recover_err
+
+        while True:
+            await handle.request_lock.acquire()
+            if manager.persistent_sessions.get(session_id) is handle:
+                break
+            handle.request_lock.release()
+            try:
+                handle = await manager.activate_persistent_session(
+                    browser_info, session_id
+                )
+            except SessionStoreError as exc:
+                raise HTTPException(
+                    status_code=500,
+                    detail="Persistent session state could not be read",
+                ) from exc
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=502,
+                    detail="Failed to reactivate persistent session",
+                ) from exc
+        try:
+            yield handle.page
+        finally:
+            try:
+                await manager.snapshot_persistent_session(session_id, handle)
+            finally:
+                handle.request_lock.release()
+        return
+
+    # ── Legacy named session: reuse existing default-context page ──
     if not is_ad_hoc and session_id in browser_info.pages:
         page = browser_info.pages[session_id]
         try:
@@ -131,7 +211,6 @@ async def get_or_create_page(
             page = None
 
     if page is None:
-        manager: BrowserManager = request.app.state.browser_manager
         try:
             page = await browser_info.context.new_page()
         except Exception as e:

@@ -12,3 +12,8 @@ wheels/
 profiles/
 .pytest_cache/
 *json
+
+# Local encrypted session state and generated keys
+.session-store/
+*.session.enc
+session_store.key

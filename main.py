@@ -1,7 +1,10 @@
 import asyncio
 import logging
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
 from patchright.async_api import async_playwright
 
@@ -117,6 +120,40 @@ app = FastAPI(
     lifespan=lifespan,
     root_path="/parser",
 )
+
+
+def _redact_validation_input(value):
+    if isinstance(value, dict):
+        return {
+            key: "[redacted]" if str(key).lower() in {"username", "password"}
+            else _redact_validation_input(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_validation_input(item) for item in value]
+    return value
+
+
+def _redact_validation_errors(errors):
+    """Redact credentials both in nested bodies and field-level error inputs."""
+    for error in errors:
+        if "input" in error:
+            error["input"] = _redact_validation_input(error["input"])
+        location = error.get("loc", ())
+        if any(str(part).lower() in {"username", "password"} for part in location):
+            error["input"] = "[redacted]"
+    return errors
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(
+    request: Request, exc: RequestValidationError
+) -> JSONResponse:
+    """Keep write-only credentials out of validation responses."""
+    del request
+    errors = _redact_validation_errors(exc.errors())
+    return JSONResponse(status_code=422, content=jsonable_encoder({"detail": errors}))
+
 
 app.include_router(health.router)
 app.include_router(browsers.router)

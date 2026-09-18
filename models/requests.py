@@ -1,6 +1,8 @@
 from enum import Enum
+import ipaddress
+import re
 
-from pydantic import BaseModel, Discriminator, Field, model_validator
+from pydantic import BaseModel, Discriminator, Field, SecretStr, field_validator, model_validator
 from typing import Annotated, Literal, List, Optional, Union
 
 
@@ -22,11 +24,113 @@ class ConnectBrowserRequest(BaseModel):
     ws_url: str = Field(..., description="CDP WebSocket URL (e.g. ws://10.0.0.5:34567/devtools/browser/abc-def)")
 
 
+_SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_HOSTNAME_PATTERN = re.compile(
+    r"^(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)(?:\.(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?))*$"
+)
+
+
+def validate_session_id_value(value: str) -> str:
+    if value in {".", ".."} or _SESSION_ID_PATTERN.fullmatch(value) is None:
+        raise ValueError(
+            "session_id must be 1-128 ASCII letters, digits, dots, underscores, or hyphens and cannot contain paths"
+        )
+    return value
+
+
+class ProxyConfig(BaseModel):
+    """Validated proxy settings. Credentials are write-only API input."""
+
+    model_config = {"extra": "forbid"}
+
+    type: Literal["http", "https", "socks5"]
+    host: str = Field(..., min_length=1, max_length=253)
+    port: int = Field(..., ge=1, le=65535)
+    username: Optional[SecretStr] = None
+    password: Optional[SecretStr] = None
+    bypass: Optional[str] = Field(default=None, max_length=2048)
+
+    @field_validator("host")
+    @classmethod
+    def validate_host(cls, value: str) -> str:
+        if value != value.strip() or any(char in value for char in "/@?#"):
+            raise ValueError("host must not contain a scheme, credentials, path, query, or fragment")
+        candidate = value[1:-1] if value.startswith("[") and value.endswith("]") else value
+        try:
+            ipaddress.ip_address(candidate)
+        except ValueError:
+            if _HOSTNAME_PATTERN.fullmatch(candidate) is None:
+                raise ValueError("host must be a valid IP address or DNS hostname")
+        return candidate
+
+    @field_validator("bypass")
+    @classmethod
+    def validate_bypass(cls, value: Optional[str]) -> Optional[str]:
+        if value is not None and (value != value.strip() or any(ord(char) < 32 for char in value)):
+            raise ValueError("bypass must not contain surrounding whitespace or control characters")
+        return value
+
+    def to_record(self) -> dict:
+        return {
+            "type": self.type,
+            "host": self.host,
+            "port": self.port,
+            "username": self.username.get_secret_value() if self.username else None,
+            "password": self.password.get_secret_value() if self.password else None,
+            "bypass": self.bypass,
+        }
+
+
+class SessionRegistrationRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    session_id: str
+    proxy: ProxyConfig
+    browser_id: Optional[str] = Field(default=None, min_length=1, max_length=128)
+
+    @field_validator("session_id")
+    @classmethod
+    def validate_session_id(cls, value: str) -> str:
+        return validate_session_id_value(value)
+
+
+class RegisterSessionsRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    sessions: List[SessionRegistrationRequest] = Field(..., min_length=1, max_length=100)
+    replace: bool = False
+
+    @model_validator(mode="after")
+    def unique_session_ids(self):
+        session_ids = [item.session_id for item in self.sessions]
+        if len(session_ids) != len(set(session_ids)):
+            raise ValueError("sessions must contain unique session_id values")
+        return self
+
+
 class StartSessionRequest(BaseModel):
-    """Start a new session (browser tab) in a specific browser."""
+    """Start a legacy page or activate a durable, dedicated proxy session."""
+
     browser_id: Optional[str] = Field(
         default=None, description="Browser to create session in. Uses first connected browser if omitted.",
     )
+    session_id: Optional[str] = Field(
+        default=None, description="Stable registered session identifier for a dedicated context.",
+    )
+    proxy: Optional[ProxyConfig] = Field(
+        default=None, description="Proxy settings used when registering a stable session.",
+    )
+
+    @field_validator("session_id")
+    @classmethod
+    def validate_session_id(cls, value: Optional[str]) -> Optional[str]:
+        return validate_session_id_value(value) if value is not None else None
+
+    @model_validator(mode="after")
+    def proxy_requires_stable_session(self):
+        if self.proxy is not None and self.session_id is None:
+            raise ValueError("proxy requires a stable session_id")
+        return self
 
 
 class SearchRequest(BaseModel):
